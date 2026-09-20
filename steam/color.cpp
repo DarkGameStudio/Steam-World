@@ -17,6 +17,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #define _UNICODE
+#define PS_CIRCLE 0x00000002
+#define PS_TRIANGLE 0x00000004
+#define PS_BOX 0x00000008
+#define PS_CAPSULE 0x00000010
+#define PS_GRADIENT 0x00000020
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
 
 #include <windows.h>
 #include <vector>
