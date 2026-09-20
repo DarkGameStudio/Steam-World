@@ -1,0 +1,306 @@
+(* :Title: Steam Game Math Lab *)
+(* :Context: SteamMath` *)
+(* ============================================================
+   Combines three disciplines to tune a game's design so that
+   players finish it AND enjoy it:
+
+     STAGE 1 — PROPOSAL  : model the player as a coupled ODE
+     STAGE 2 — ALGEBRA   : solve symbolically, extract bounds
+     STAGE 3 — SIMULATE  : integrate the full nonlinear system
+     STAGE 4 — EVOLVE    : DifferentialEvolution over parameters
+     STAGE 5 — PARETO    : sweep weights, expose the tradeoff
+     STAGE 6 — VISUALIZE : progression curves + Pareto front
+     STAGE 7 — EXPORT    : write tuned parameters to a .m file
+
+   Run:   wolframscript -file steam_math_lab.wl
+   Or:    paste into a notebook and evaluate cell by cell.
+   ============================================================ *)
+
+ClearAll["Global`*"];
+SeedRandom[42];
+$HistoryLength = 0;
+
+tEnd = 45.0;   (* session length in minutes *)
+
+(* ============================================================ *)
+(* STAGE 1 — PROPOSAL                                           *)
+(* Player state:                                                *)
+(*   skill[t]    — competence in [0,1]                          *)
+(*   prog[t]     — fraction of the game completed, in [0,1]     *)
+(*                                                              *)
+(* Flow theory says players feel best when skill ≈ challenge.   *)
+(* Model that as a Gaussian "flow window" centered on s = c.   *)
+(*                                                              *)
+(* Parameters:                                                  *)
+(*   k     — base progress rate                                 *)
+(*   alpha — learning rate                                      *)
+(*   beta  — forgetting rate                                    *)
+(*   gamma — how fast challenge escalates with progress         *)
+(*   w     — width of the flow window (larger = more forgiving) *)
+(*   c0    — starting challenge                                 *)
+(* ============================================================ *)
+
+flow[s_, c_, w_] := Exp[-((s - c)/w)^2];
+
+makeSystem[k_, alpha_, beta_, gamma_, w_, c0_] := {
+   prog'[t]  == k * flow[skill[t], c0 + gamma * prog[t], w] * (1 - prog[t]),
+   skill'[t] == alpha * flow[skill[t], c0 + gamma * prog[t], w] *
+                (1 - skill[t]) - beta * skill[t],
+   prog[0]  == 0.0,
+   skill[0] == 0.05
+   };
+
+(* ============================================================ *)
+(* STAGE 2 — ALGEBRA                                            *)
+(* ============================================================ *)
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 2 — SYMBOLIC ALGEBRA"];
+Print["============================================================"];
+
+(* (a) Frozen-skill case: if skill tracks challenge exactly,
+       flow = 1 always, so prog' = k(1-prog). Solve by hand. *)
+frozen = DSolveValue[{prog'[t] == k (1 - prog[t]), prog[0] == 0},
+                     prog[t], t];
+Print["(a) Perfect-flow completion curve:"];
+Print["      P(t) = ", frozen];
+
+(* (b) Half-completion time: solve P(t) = 1/2 for t. *)
+tHalfEq = Solve[frozen == 1/2 && k > 0, t, Reals];
+Print["(b) Half-completion time:"];
+Print["      ", tHalfEq];
+
+(* (c) Skill with learning + forgetting, frozen challenge. *)
+skillFrozen = DSolveValue[
+   {skill'[t] == alpha (1 - skill[t]) - beta skill[t], skill[0] == 1/20},
+   skill[t], t];
+Print["(c) Skill trajectory with forgetting:"];
+Print["      s(t) = ", Simplify[skillFrozen]];
+
+(* (d) Steady-state skill. This is a HARD upper bound on challenge. *)
+sInf = Simplify[Limit[skillFrozen, t -> Infinity,
+                      Assumptions -> alpha > 0 && beta > 0]];
+Print["(d) Steady-state skill:"];
+Print["      s_inf = ", sInf];
+Print["      Any challenge above s_inf pushes the player out of flow"];
+Print["      permanently. This bounds c0 + gamma before the search."];
+
+(* ============================================================ *)
+(* STAGE 3 — NUMERICAL SIMULATION                               *)
+(* runGame returns {completion, flow, frustration, satisfaction} *)
+(* ============================================================ *)
+
+runGame[p_List] /; VectorQ[p, NumericQ] := Module[
+   {k, alpha, beta, gamma, w, c0, sol, Pf, sf,
+    completion, inFlow, frustration, satisfaction, cOf},
+
+   {k, alpha, beta, gamma, w, c0} = p;
+
+   sol = Quiet@Check[
+       NDSolveValue[makeSystem[k, alpha, beta, gamma, w, c0],
+          {prog, skill}, {t, 0, tEnd},
+          PrecisionGoal -> 6, AccuracyGoal -> 6],
+       $Failed];
+   If[sol === $Failed, Return[{-1.0, 0.0, 1.0, -1.0}]];
+
+   Pf = sol[[1]]; sf = sol[[2]];
+   cOf[t_?NumericQ] := c0 + gamma * Pf[t];
+
+   completion = Clip[Pf[tEnd], {0.0, 1.0}];
+
+   (* time spent inside the flow window, normalized to [0,1] *)
+   inFlow = NIntegrate[
+       Exp[-((sf[t] - cOf[t])/w)^2],
+       {t, 0, tEnd}, PrecisionGoal -> 4] / tEnd;
+
+   (* time spent far above the challenge the player can handle *)
+   frustration = NIntegrate[
+       Max[0, cOf[t] - sf[t] - w],
+       {t, 0, tEnd}, PrecisionGoal -> 4] / tEnd;
+
+   satisfaction = inFlow - 2.0 * frustration;
+
+   {completion, inFlow, frustration, satisfaction}
+   ];
+
+(* ============================================================ *)
+(* STAGE 4 — EVOLUTION                                          *)
+(* ============================================================ *)
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 4 — DIFFERENTIAL EVOLUTION"];
+Print["============================================================"];
+
+bounds = {
+   {0.02, 0.30},   (* k     progress rate        *)
+   {0.05, 0.50},   (* alpha learning rate        *)
+   {0.00, 0.15},   (* beta  forgetting rate      *)
+   {0.10, 1.50},   (* gamma challenge escalation *)
+   {0.05, 0.40},   (* w     flow window width    *)
+   {0.05, 0.50}    (* c0    starting challenge   *)
+   };
+vars = {k, alpha, beta, gamma, w, c0};
+
+cons = And @@ MapThread[#1[[1]] <= #2 <= #1[[2]] &, {bounds, vars}];
+
+scalarObj[p_List] /; VectorQ[p, NumericQ] := Module[{r = runGame[p]},
+   -(0.5 * r[[1]] + 0.5 * r[[4]])
+   ];
+
+Print["Maximizing 0.5*completion + 0.5*satisfaction ..."];
+
+{bestVal, bestPos} = NMinimize[
+   {scalarObj[{k, alpha, beta, gamma, w, c0}], cons},
+   vars,
+   Method -> {"DifferentialEvolution",
+              "RandomSeed" -> 1,
+              "SearchPoints" -> 30,
+              "CrossProbability" -> 0.9,
+              "ScalingFactor" -> 0.6},
+   MaxIterations -> 100
+   ];
+
+bestParams = {k, alpha, beta, gamma, w, c0} /. bestPos;
+bestResult = runGame[bestParams];
+
+Print["Best parameters:"];
+Print["  k     = ", NumberForm[bestParams[[1]], 4]];
+Print["  alpha = ", NumberForm[bestParams[[2]], 4]];
+Print["  beta  = ", NumberForm[bestParams[[3]], 4]];
+Print["  gamma = ", NumberForm[bestParams[[4]], 4]];
+Print["  w     = ", NumberForm[bestParams[[5]], 4]];
+Print["  c0    = ", NumberForm[bestParams[[6]], 4]];
+
+Print["Best metrics:"];
+Print["  completion   = ", NumberForm[bestResult[[1]], 4]];
+Print["  flow         = ", NumberForm[bestResult[[2]], 4]];
+Print["  frustration  = ", NumberForm[bestResult[[3]], 4]];
+Print["  satisfaction = ", NumberForm[bestResult[[4]], 4]];
+
+(* ============================================================ *)
+(* STAGE 5 — PARETO FRONT                                       *)
+(* Sweep the weight, run a short DE at each, plot the frontier. *)
+(* ============================================================ *)
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 5 — PARETO FRONT (completion vs satisfaction)"];
+Print["============================================================"];
+
+paretoWeights = {0.0, 0.25, 0.5, 0.75, 1.0};
+
+paretoRun[w1_?NumericQ] := Module[{obj, res, p, r},
+   obj[q_List] /; VectorQ[q, NumericQ] :=
+      -(w1 * runGame[q][[1]] + (1 - w1) * runGame[q][[4]]);
+   res = Quiet@NMinimize[
+      {obj[{k, alpha, beta, gamma, w, c0}], cons},
+      vars,
+      Method -> {"DifferentialEvolution",
+                 "RandomSeed" -> 1, "SearchPoints" -> 20},
+      MaxIterations -> 40];
+   p = {k, alpha, beta, gamma, w, c0} /. res[[2]];
+   r = runGame[p];
+   {w1, r[[1]], r[[4]], p}
+   ];
+
+pareto = Table[paretoRun[w1], {w1, paretoWeights}];
+
+Print["  weight   completion   satisfaction"];
+Do[
+   Print["  ", NumberForm[pareto[[i, 1]], 3],
+         "      ", NumberForm[pareto[[i, 2]], 4],
+         "       ", NumberForm[pareto[[i, 3]], 4]],
+   {i, Length[pareto]}];
+
+(* ============================================================ *)
+(* STAGE 6 — VISUALIZATION                                      *)
+(* ============================================================ *)
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 6 — VISUALIZATION"];
+Print["============================================================"];
+
+baseParams = {0.08, 0.15, 0.02, 0.6, 0.15, 0.2};
+baseSol = NDSolveValue[makeSystem @@ baseParams, {prog, skill}, {t, 0, tEnd}];
+bestSol = NDSolveValue[makeSystem @@ bestParams, {prog, skill}, {t, 0, tEnd}];
+
+baseC[t_] := baseParams[[6]] + baseParams[[4]] * baseSol[[1]][t];
+bestC[t_] := bestParams[[6]] + bestParams[[4]] * bestSol[[1]][t];
+
+plot1 = Plot[
+   {baseSol[[1]][t], bestSol[[1]][t]}, {t, 0, tEnd},
+   PlotLabel -> "Progress P(t)",
+   AxesLabel -> {"t (min)", "P"},
+   PlotLegends -> {"baseline", "optimized"},
+   PlotStyle -> {Directive[Gray, Dashed], Directive[Blue, Thick]},
+   ImageSize -> 380];
+
+plot2 = Plot[
+   {baseSol[[2]][t], baseC[t], bestSol[[2]][t], bestC[t]}, {t, 0, tEnd},
+   PlotLabel -> "Skill vs Challenge",
+   AxesLabel -> {"t (min)", "level"},
+   PlotLegends -> {"s_base", "c_base", "s_opt", "c_opt"},
+   PlotStyle -> {
+      Directive[Gray, Dashed], Directive[LightGray, Dashed],
+      Directive[Blue, Thick], Directive[Red, Thick]},
+   ImageSize -> 380];
+
+paretoPts = pareto[[All, {2, 3}]];
+plot3 = ListPlot[paretoPts,
+   PlotLabel -> "Pareto front",
+   AxesLabel -> {"completion", "satisfaction"},
+   PlotStyle -> Directive[PointSize[0.025], Purple],
+   Joined -> True, Mesh -> All,
+   ImageSize -> 380];
+
+Export["steam_math_lab_progression.png",
+       GraphicsGrid[{{plot1, plot2}}, ImageSize -> 800]];
+Export["steam_math_lab_pareto.png", plot3];
+
+Print["Wrote steam_math_lab_progression.png"];
+Print["Wrote steam_math_lab_pareto.png"];
+
+(* ============================================================ *)
+(* STAGE 7 — EXPORT TUNED PARAMETERS                            *)
+(* ============================================================ *)
+
+exportStr = StringJoin[
+   "(* Auto-generated by steam_math_lab.wl *)\n",
+   "(* Re-run the lab to update. *)\n\n",
+   "gameTuning = <|\n",
+   "  \"k\"     -> ", ToString[bestParams[[1]]], ",\n",
+   "  \"alpha\" -> ", ToString[bestParams[[2]]], ",\n",
+   "  \"beta\"  -> ", ToString[bestParams[[3]]], ",\n",
+   "  \"gamma\" -> ", ToString[bestParams[[4]]], ",\n",
+   "  \"w\"     -> ", ToString[bestParams[[5]]], ",\n",
+   "  \"c0\"    -> ", ToString[bestParams[[6]]], ",\n",
+   "  \"predictedCompletion\"   -> ", ToString[bestResult[[1]]], ",\n",
+   "  \"predictedSatisfaction\" -> ", ToString[bestResult[[4]]], "\n",
+   "|>;\n"
+];
+
+outFile = FileNameJoin[{Directory[], "game_tuned.m"}];
+Export[outFile, exportStr, "Text"];
+Print["Exported tuning to ", outFile];
+
+(* ============================================================ *)
+(* SUMMARY                                                      *)
+(* ============================================================ *)
+
+baseResult = runGame[baseParams];
+
+Print[""];
+Print["============================================================"];
+Print["  SUMMARY"];
+Print["============================================================"];
+Print["                baseline    optimized"];
+Print["  completion    ", NumberForm[baseResult[[1]], 4],
+      "      ", NumberForm[bestResult[[1]], 4]];
+Print["  satisfaction  ", NumberForm[baseResult[[4]], 4],
+      "      ", NumberForm[bestResult[[4]], 4]];
+Print["  frustration   ", NumberForm[baseResult[[3]], 4],
+      "      ", NumberForm[bestResult[[3]], 4]];
+Print[""];
