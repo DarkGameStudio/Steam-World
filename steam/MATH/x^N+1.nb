@@ -1,0 +1,93 @@
+(* ============================================================
+   Antiderivative of 1/(x^N + 1)
+   Symbolic for general N, explicit for specific integers,
+   and verified by differentiation.
+   ============================================================ *)
+
+ClearAll["Global`*"];
+$Assumptions = Element[x, Reals] && x > 0 && Element[n, Integers] && n > 1;
+
+(* ------------------------------------------------------------
+   1. Symbolic form for general N
+   ------------------------------------------------------------ *)
+general = Integrate[1/(x^n + 1), x, Assumptions -> n > 1];
+Print["General symbolic antiderivative:"];
+Print[general];
+
+(* ------------------------------------------------------------
+   2. Explicit forms for specific N
+   ------------------------------------------------------------ *)
+TableForm[
+  Table[
+    {n,
+     Simplify[Integrate[1/(x^n + 1), x, Assumptions -> x > 0]}
+    },
+    {n, 2, 8}
+  ],
+  TableHeadings -> {None, {"N", "Integral"}},
+  TableDepth -> 2
+]
+
+(* ------------------------------------------------------------
+   3. The root-based closed form, built by hand
+   ------------------------------------------------------------ *)
+rootForm[n_Integer] /; n > 1 := Module[{roots, terms},
+  roots = Table[Exp[I (2 k + 1) Pi/n], {k, 0, n - 1}];
+  terms = (1/n) * roots * Log[x - roots];
+  Simplify[Total[terms], Assumptions -> x > 0]
+];
+
+Print["Root-sum form for N = 4:"];
+Print[rootForm[4]];
+
+Print["Does it match Integrate?"];
+Print[Simplify[
+  rootForm[4] - Integrate[1/(x^4 + 1), x, Assumptions -> x > 0],
+  Assumptions -> x > 0
+]];
+
+(* ------------------------------------------------------------
+   4. Verify every closed form by differentiation
+   ------------------------------------------------------------ *)
+Print["Verification — derivative of the integral must equal 1/(x^N+1)"];
+Print[""];
+Do[
+  Module[{F, dF},
+    F  = Integrate[1/(x^n + 1), x, Assumptions -> x > 0];
+    dF = Simplify[D[F, x] - 1/(x^n + 1), Assumptions -> x > 0];
+    Print["  N = ", n, "   residual = ", dF]
+  ],
+  {n, 2, 8}
+]
+
+(* ------------------------------------------------------------
+   5. Definite integral — the clean π/N result
+   ------------------------------------------------------------ *)
+Print["Integral from 0 to Infinity of 1/(x^N + 1):"];
+Print[""];
+Do[
+  Module[{val},
+    val = Integrate[1/(x^n + 1), {x, 0, Infinity}, Assumptions -> n > 1];
+    Print["  N = ", n, "   ->  ", val, "   (numeric: ",
+          NumberForm[N[val], 6], ")"]
+  ],
+  {n, 2, 10}
+]
+
+(* ------------------------------------------------------------
+   6. Confirm the even-N formula explicitly
+   ------------------------------------------------------------ *)
+evenFormula[n_Integer] /; EvenQ[n] && n > 1 := Module[{m, k, theta},
+  m = n/2;
+  (1/n) * Sum[
+     2 Cos[theta[k]] * ArcTan[(x - Cos[theta[k]])/Sin[theta[k]]]
+     - Sin[theta[k]] * Log[x^2 - 2 x Cos[theta[k]] + 1],
+     {k, 0, m - 1}
+  ] /. theta[k_] :> (2 k + 1) Pi/(2 m)
+];
+
+Print["Even-N closed form vs Integrate for N = 6:"];
+Print[Simplify[
+  evenFormula[6] - Integrate[1/(x^6 + 1), x, Assumptions -> x > 0],
+  Assumptions -> x > 0
+]];
