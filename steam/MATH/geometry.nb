@@ -1,0 +1,99 @@
+(* :Title: Game Geometry Lab *)
+(* :Context: GameGeom` *)
+(* ============================================================
+   3D game geometry lab — polyhedra, coordinates, voxels.
+
+   STAGE 1 — Polyhedron primitives
+   STAGE 2 — Coordinate systems and 4x4 transforms
+   STAGE 3 — Voxel grid storage and queries
+   STAGE 4 — Unified scene: poly collider in a voxel world
+   STAGE 5 — Ray casting through the grid (DDA)
+   STAGE 6 — Export to OBJ
+
+   Y-up convention (Unity/Unreal-like). Z in Wolfram's
+   Graphics3D is up, so we swap at display time.
+
+   Run: wolframscript -file game_geometry_lab.wl
+   ============================================================ *)
+
+ClearAll["Global`*"];
+SeedRandom[7];
+$HistoryLength = 0;
+
+(* ============================================================ *)
+(* STAGE 1 — POLYHEDRON PRIMITIVES                              *)
+(* ============================================================ *)
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 1 — POLYHEDRON PRIMITIVES"];
+Print["============================================================"];
+
+(* --- 1a. The five Platonic solids ------------------------------------ *)
+platonicNames = {"Tetrahedron", "Cube", "Octahedron",
+                 "Dodecahedron", "Icosahedron"};
+
+platonicInfo = Table[
+   Module[{v, f, bb, rC, rI},
+    v  = N @ PolyhedronData[name, "VertexCoordinates"];
+    f  = PolyhedronData[name, "FaceIndices"];
+    bb = {Min /@ Transpose[v], Max /@ Transpose[v]};
+    rC = Max[Norm /@ v];
+    rI = PolyhedronData[name, "Inradius"];
+    <|"Name" -> name,
+      "Verts" -> Length[v],
+      "Faces" -> Length[f],
+      "CircumR" -> rC,
+      "InR" -> rI,
+      "BB min" -> Round[bb[[1]], 0.01],
+      "BB max" -> Round[bb[[2]], 0.01]|>],
+   {name, platonicNames}];
+
+Print[Dataset[platonicInfo]];
+
+(* --- 1b. Visualize each solid with its edges and vertices ----------- *)
+polyShot[name_] := Module[{v, f},
+   v = N @ PolyhedronData[name, "VertexCoordinates"];
+   f = PolyhedronData[name, "FaceIndices"];
+   Graphics3D[{
+      EdgeForm[Directive[Thin, GrayLevel[0.3]]],
+      FaceForm[Directive[Opacity[0.35], ColorData[97][1]]],
+      GraphicsComplex[v, Polygon /@ f],
+      Black, PointSize[0.02], Point[v],
+      Red, Sphere[#, 0.03] & /@ v},
+     Boxed -> False, ImageSize -> 220,
+     ViewPoint -> {2.5, -2.5, 1.5}]
+   ];
+
+Print["The five Platonic solids (verts red, faces translucent):"];
+Print[GraphicsRow[polyShot /@ platonicNames, ImageSize -> 900]];
+
+(* --- 1c. Useful derived quantities for a game collider ------------- *)
+(* Support function: extent of a polyhedron along a direction. Used    *)
+(* by SAT (separating axis theorem) collision tests.                   *)
+supportFunction[verts_List, dir_List] :=
+   Max[verts . dir];
+
+(* Bounding sphere: center + radius. Cheapest broad-phase collider. *)
+boundingSphere[verts_List] := Module[{c, r},
+   c = Mean[verts];
+   r = Max[Norm /@ (verts - c)];
+   {c, r}];
+
+(* AABB from vertices. Standard broad-phase collider. *)
+aabbFromVerts[verts_List] :=
+   {Min /@ Transpose[verts], Max /@ Transpose[verts]};
+
+(* Demonstrate on the icosahedron *)
+icoVerts = N @ PolyhedronData["Icosahedron", "VertexCoordinates"];
+{icoCenter, icoRadius} = boundingSphere[icoVerts];
+{icoMin, icoMax} = aabbFromVerts[icoVerts];
+
+Print[""];
+Print["Icosahedron collider data:"];
+Print["  bounding sphere center: ", Round[icoCenter, 0.001]];
+Print["  bounding sphere radius: ", Round[icoRadius, 0.001]];
+Print["  AABB min: ", Round[icoMin, 0.001]];
+Print["  AABB max: ", Round[icoMax, 0.001]];
+Print["  support along +X: ",
+      Round[supportFunction[icoVerts, {1, 0, 0}], 0.001]];
