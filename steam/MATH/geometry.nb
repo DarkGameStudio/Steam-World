@@ -3,97 +3,391 @@
 (* ============================================================
    3D game geometry lab — polyhedra, coordinates, voxels.
 
-   STAGE 1 — Polyhedron primitives
-   STAGE 2 — Coordinate systems and 4x4 transforms
-   STAGE 3 — Voxel grid storage and queries
-   STAGE 4 — Unified scene: poly collider in a voxel world
-   STAGE 5 — Ray casting through the grid (DDA)
-   STAGE 6 — Export to OBJ
+     STAGE 1 — Polyhedron primitives
+     STAGE 2 — Coordinate systems & 4x4 transforms
+     STAGE 3 — Voxel blocks & chunk storage
+     STAGE 4 — Unified scene: collider in a voxel world
+     STAGE 5 — Ray casting through the grid (DDA)
+     STAGE 6 — Export world geometry
 
-   Y-up convention (Unity/Unreal-like). Z in Wolfram's
-   Graphics3D is up, so we swap at display time.
+   Convention: Z-up (matches Wolfram Graphics3D).
+   To convert to Y-up (Unity/Unreal), swap Y and Z at export.
 
-   Run: wolframscript -file game_geometry_lab.wl
+   Run:   wolframscript -file game_geometry_lab.wl
+   Or:    paste into a notebook cell by cell.
    ============================================================ *)
 
 ClearAll["Global`*"];
 SeedRandom[7];
 $HistoryLength = 0;
 
-(* ============================================================ *)
+
 (* STAGE 1 — POLYHEDRON PRIMITIVES                              *)
-(* ============================================================ *)
+
 
 Print[""];
 Print["============================================================"];
 Print["  STAGE 1 — POLYHEDRON PRIMITIVES"];
 Print["============================================================"];
 
-(* --- 1a. The five Platonic solids ------------------------------------ *)
+(* --- 1a. Metadata for each Platonic solid ------------------- *)
 platonicNames = {"Tetrahedron", "Cube", "Octahedron",
                  "Dodecahedron", "Icosahedron"};
 
 platonicInfo = Table[
-   Module[{v, f, bb, rC, rI},
+   Module[{v, bb, rC, rI},
     v  = N @ PolyhedronData[name, "VertexCoordinates"];
-    f  = PolyhedronData[name, "FaceIndices"];
     bb = {Min /@ Transpose[v], Max /@ Transpose[v]};
     rC = Max[Norm /@ v];
     rI = PolyhedronData[name, "Inradius"];
     <|"Name" -> name,
       "Verts" -> Length[v],
-      "Faces" -> Length[f],
-      "CircumR" -> rC,
-      "InR" -> rI,
+      "Faces" -> PolyhedronData[name, "FaceCount"],
+      "CircumR" -> Round[rC, 0.001],
+      "InR" -> Round[rI, 0.001],
       "BB min" -> Round[bb[[1]], 0.01],
       "BB max" -> Round[bb[[2]], 0.01]|>],
    {name, platonicNames}];
 
 Print[Dataset[platonicInfo]];
 
-(* --- 1b. Visualize each solid with its edges and vertices ----------- *)
+(* --- 1b. Render each solid: edges, translucent faces, verts -- *)
 polyShot[name_] := Module[{v, f},
    v = N @ PolyhedronData[name, "VertexCoordinates"];
    f = PolyhedronData[name, "FaceIndices"];
    Graphics3D[{
-      EdgeForm[Directive[Thin, GrayLevel[0.3]]],
-      FaceForm[Directive[Opacity[0.35], ColorData[97][1]]],
+      EdgeForm[Directive[Thin, GrayLevel[0.25]]],
+      FaceForm[Directive[Opacity[0.30], ColorData[97][1]]],
       GraphicsComplex[v, Polygon /@ f],
-      Black, PointSize[0.02], Point[v],
-      Red, Sphere[#, 0.03] & /@ v},
-     Boxed -> False, ImageSize -> 220,
+      Black, PointSize[0.025], Point[v],
+      Red, Sphere[#, 0.035] & /@ v},
+     Boxed -> False, ImageSize -> 210,
      ViewPoint -> {2.5, -2.5, 1.5}]
    ];
 
-Print["The five Platonic solids (verts red, faces translucent):"];
-Print[GraphicsRow[polyShot /@ platonicNames, ImageSize -> 900]];
+Print["The five Platonic solids (red dots are vertices):"];
+Print[GraphicsRow[polyShot /@ platonicNames, ImageSize -> 950]];
 
-(* --- 1c. Useful derived quantities for a game collider ------------- *)
-(* Support function: extent of a polyhedron along a direction. Used    *)
-(* by SAT (separating axis theorem) collision tests.                   *)
-supportFunction[verts_List, dir_List] :=
-   Max[verts . dir];
+(* --- 1c. Collider primitives derived from vertices ---------- *)
+boundingSphere[verts_List] :=
+   Module[{c = Mean[verts], r},
+     r = Max[Norm /@ (verts - c)];
+     {c, r}];
 
-(* Bounding sphere: center + radius. Cheapest broad-phase collider. *)
-boundingSphere[verts_List] := Module[{c, r},
-   c = Mean[verts];
-   r = Max[Norm /@ (verts - c)];
-   {c, r}];
-
-(* AABB from vertices. Standard broad-phase collider. *)
 aabbFromVerts[verts_List] :=
    {Min /@ Transpose[verts], Max /@ Transpose[verts]};
 
-(* Demonstrate on the icosahedron *)
+supportFunction[verts_List, dir_List] := Max[verts . dir];
+
 icoVerts = N @ PolyhedronData["Icosahedron", "VertexCoordinates"];
 {icoCenter, icoRadius} = boundingSphere[icoVerts];
-{icoMin, icoMax} = aabbFromVerts[icoVerts];
+{icoMin, icoMax}       = aabbFromVerts[icoVerts];
 
 Print[""];
-Print["Icosahedron collider data:"];
-Print["  bounding sphere center: ", Round[icoCenter, 0.001]];
-Print["  bounding sphere radius: ", Round[icoRadius, 0.001]];
-Print["  AABB min: ", Round[icoMin, 0.001]];
-Print["  AABB max: ", Round[icoMax, 0.001]];
-Print["  support along +X: ",
-      Round[supportFunction[icoVerts, {1, 0, 0}], 0.001]];
+Print["Icosahedron collider data (broad-phase primitives):"];
+Print["  bounding sphere center : ", Round[icoCenter, 0.001]];
+Print["  bounding sphere radius : ", Round[icoRadius, 0.001]];
+Print["  AABB min               : ", Round[icoMin, 0.001]];
+Print["  AABB max               : ", Round[icoMax, 0.001]];
+Print["  support along +X       : ",
+       Round[supportFunction[icoVerts, {1, 0, 0}], 0.001]];
+Print["  (support fn is what SAT uses to separate convex hulls)"];
+
+
+(* STAGE 2 — COORDINATE SYSTEMS AND TRANSFORMS                  *)
+
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 2 — COORDINATE SYSTEMS AND TRANSFORMS"];
+Print["============================================================"];
+
+translationM[t_List] :=
+   {{1, 0, 0, t[[1]]}, {0, 1, 0, t[[2]]},
+    {0, 0, 1, t[[3]]}, {0, 0, 0, 1}};
+
+scaleM[s_List] :=
+   {{s[[1]], 0, 0, 0}, {0, s[[2]], 0, 0},
+    {0, 0, s[[3]], 0}, {0, 0, 0, 1}};
+
+rotationXM[a_] := Module[{c = Cos[a], s = Sin[a]},
+   {{1, 0, 0, 0}, {0, c, -s, 0}, {0, s, c, 0}, {0, 0, 0, 1}}];
+rotationYM[a_] := Module[{c = Cos[a], s = Sin[a]},
+   {{c, 0, s, 0}, {0, 1, 0, 0}, {-s, 0, c, 0}, {0, 0, 0, 1}}];
+rotationZM[a_] := Module[{c = Cos[a], s = Sin[a]},
+   {{c, -s, 0, 0}, {s, c, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}];
+
+applyM[m_, p_List] := Most[m . Append[N[p], 1.0]];
+composeM[ms__]     := Dot[ms];
+
+coordAxes[len_: 1] := {
+   Red,   Arrow[{{0, 0, 0}, {len, 0, 0}}],
+   Green, Arrow[{{0, 0, 0}, {0, len, 0}}],
+   Blue,  Arrow[{{0, 0, 0}, {0, 0, len}}]};
+
+coordLabels[len_: 1] := {
+   Text[Style["X", Red, 14], {len * 1.15, 0, 0}],
+   Text[Style["Y", Green, 14], {0, len * 1.15, 0}],
+   Text[Style["Z", Blue, 14], {0, 0, len * 1.15}]};
+
+(* --- 2a. Local -> World transform chain -------------------- *)
+objectM = composeM[
+   translationM[{3, 2, 1}],
+   rotationZM[30 Degree],
+   rotationXM[15 Degree],
+   scaleM[{1.2, 1.2, 1.2}]];
+
+objectWorldVerts = applyM[objectM, #] & /@ icoVerts;
+
+Print["Local -> World matrix (row 1..4):"];
+Do[Print["  ", Round[objectM[[i]], 0.001]], {i, 4}];
+
+Print["Sample vertex mapping (local -> world):"];
+Do[
+  Print["  ", Round[icoVerts[[i]], 0.001],
+        "  ->  ", Round[objectWorldVerts[[i]], 0.001]],
+  {i, {1, 4, 8}}];
+
+(* --- 2b. Draw local frame + world frame -------------------- *)
+localFrame = Graphics3D[{
+   {Opacity[0.5], coordAxes[1.5]},
+   {Gray, Dashed, Line[{{0,0,0}, #}] & /@ icoVerts},
+   {Orange, Opacity[0.4],
+    GraphicsComplex[icoVerts, Polygon /@ PolyhedronData["Icosahedron", "FaceIndices"]]}}];
+
+worldFrame = Graphics3D[{
+   coordAxes[3],
+   coordLabels[3],
+   {EdgeForm[Directive[Thick, Black]],
+    FaceForm[Directive[Opacity[0.65], Orange]],
+    GraphicsComplex[objectWorldVerts,
+       Polygon /@ PolyhedronData["Icosahedron", "FaceIndices"]]},
+   {Black, PointSize[0.025], Point[objectWorldVerts]},
+   Text[Style["world origin (0,0,0)", Black, 11], {0.6, 0.6, -0.4}]}];
+
+Print["Local frame vs world-placed collider:"];
+Print[GraphicsRow[{localFrame, worldFrame}, ImageSize -> 800]];
+
+
+(* STAGE 3 — VOXEL BLOCKS AND CHUNK STORAGE                     *)
+
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 3 — VOXEL BLOCKS AND CHUNK STORAGE"];
+Print["============================================================"];
+
+materials = <|
+   0 -> <|"Name" -> "Air",   "Color" -> RGBColor[0, 0, 0, 0]|>,
+   1 -> <|"Name" -> "Grass", "Color" -> RGBColor[0.35, 0.62, 0.28]|>,
+   2 -> <|"Name" -> "Dirt",  "Color" -> RGBColor[0.45, 0.30, 0.20]|>,
+   3 -> <|"Name" -> "Stone", "Color" -> RGBColor[0.52, 0.53, 0.58]|>,
+   4 -> <|"Name" -> "Sand",  "Color" -> RGBColor[0.86, 0.78, 0.55]|>,
+   5 -> <|"Name" -> "Water", "Color" -> RGBColor[0.20, 0.45, 0.75]|>,
+   6 -> <|"Name" -> "Wood",  "Color" -> RGBColor[0.50, 0.35, 0.20]|>,
+   7 -> <|"Name" -> "Leaf",  "Color" -> RGBColor[0.24, 0.55, 0.22]|>
+   |>;
+
+chunkSize = 12;
+
+(* Deterministic height field — no RandomReal ordering worries. *)
+heightAt[i_, j_] := Round[
+   3 + 1.8*Sin[i/2.5] + 1.2*Cos[j/3.0] + 0.6*Sin[(i + j)/1.8]];
+
+(* Fill each (i,j) column from k=0 up to heightAt[i,j]. *)
+blockList = Flatten[
+   Table[
+     Module[{h = heightAt[i, j]},
+       Table[
+         {i, j, k} ->
+           Which[k == h,        1,   (* grass *)
+                 k >= h - 2,    2,   (* dirt  *)
+                 True,          3],  (* stone *)
+         {k, 0, h}]],
+     {i, 1, chunkSize}, {j, 1, chunkSize}],
+   1];
+
+blocks = Association[blockList];
+Print["Solid voxel count : ", Length[blocks]];
+Print["Chunk extent      : ",
+      chunkSize, " x ", chunkSize, " x ",
+      Max[heightAt[#, #2] & @@@ Tuples[Range[chunkSize], 2]] + 1, " blocks"];
+
+getBlock[pos_]  := Lookup[blocks, pos, 0];
+isSolid[pos_]   := getBlock[pos] != 0;
+neighbors6[pos_] := pos + # & /@
+   {{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}};
+
+Print[""];
+Print["Neighbour query at {6,6,4}: ",
+      Select[neighbors6[{6, 6, 4}], isSolid]];
+
+(* --- Render voxels ----------------------------------------- *)
+renderVoxel[{pos_, mat_}] := Module[{col},
+   col = materials[mat]["Color"];
+   {EdgeForm[Directive[GrayLevel[0.15], Thickness[0.001]]],
+    FaceForm[col],
+    Cuboid[pos, pos + 1]}
+   ];
+
+solidBlocks = Select[Normal[blocks], #[[2]] != 0 &];
+
+voxelGraphics = Graphics3D[
+   renderVoxel /@ solidBlocks,
+   Boxed -> True,
+   ImageSize -> 550,
+   ViewPoint -> {2.2, -2.2, 1.6}];
+
+Print["Voxel terrain:"];
+Print[voxelGraphics];
+
+
+(* STAGE 4 — UNIFIED SCENE                                      *)
+
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 4 — UNIFIED SCENE: collider inside the voxel world"];
+Print["============================================================"];
+
+centerI = Round[chunkSize/2];
+centerJ = Round[chunkSize/2];
+baseH   = heightAt[centerI, centerJ];
+
+objectWorldM = composeM[
+   translationM[{centerI + 0.5, centerJ + 0.5, baseH + 1.5}],
+   rotationZM[25 Degree],
+   rotationXM[15 Degree],
+   scaleM[{1.3, 1.3, 1.3}]];
+
+objectWorldVerts = applyM[objectWorldM, #] & /@ icoVerts;
+
+(* Depth-sorted — render farther voxels first for cleaner edges *)
+scene = Show[
+   voxelGraphics,
+   Graphics3D[{
+      {EdgeForm[Directive[Thickness[0.004], Black]],
+       FaceForm[Directive[Opacity[0.72], Orange]],
+       GraphicsComplex[objectWorldVerts,
+          Polygon /@ PolyhedronData["Icosahedron", "FaceIndices"]]},
+      {Black, PointSize[0.022], Point[objectWorldVerts]},
+      {Red, PointSize[0.03],
+       Point[{centerI + 0.5, centerJ + 0.5, baseH + 1.5}]},
+      Text[Style["collider origin",
+                 Style[Black, 11], Background -> White],
+           {centerI + 0.5, centerJ + 0.5, baseH + 3.8}]
+   }],
+   Graphics3D[coordAxes[6]],
+   Graphics3D[coordLabels[6]],
+   Boxed -> True,
+   ImageSize -> 750];
+
+Print["Collider (orange) sitting on voxel terrain, world axes overlaid:"];
+Print[scene];
+
+
+(* STAGE 5 — RAY CASTING (DDA VOXEL TRAVERSAL)                  *)
+
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 5 — RAY CASTING (Amanatides–Woo DDA)"];
+Print["============================================================"];
+
+(* Amanatides & Woo, "A Fast Voxel Traversal Algorithm". *)
+ddaRay[origin_List, dir_List, maxSteps_: 200] := Module[
+   {d, p, step, tMax, tDelta, path, hit, k},
+
+   d = Normalize[N[dir]];
+   p = Floor[N[origin]];
+   path = {p};
+   hit = None;
+
+   If[isSolid[p], Return[<|"Path" -> path, "Hit" -> p|>]];
+
+   step = Table[If[d[[k]] > 0, 1, -1], {k, 3}];
+   tDelta = Table[
+      If[Abs[d[[k]]] < 1.*^-9, Infinity, 1.0/Abs[d[[k]]]],
+      {k, 3}];
+
+   tMax = Table[
+      If[Abs[d[[k]]] < 1.*^-9,
+         Infinity,
+         Module[{b = If[d[[k]] > 0, p[[k]] + 1, p[[k]]]},
+            (b - origin[[k]])/d[[k]]]],
+      {k, 3}];
+
+   Do[
+      Module[{axis},
+       axis = Ordering[tMax, 1][[1]];
+       p[[axis]] += step[[axis]];
+       tMax[[axis]] += tDelta[[axis]];
+       AppendTo[path, p]];
+      If[isSolid[p], hit = p; Break[]],
+      {maxSteps}];
+
+   <|"Path" -> path, "Hit" -> hit|>
+   ];
+
+cameraPos  = {-6, -6, 9};
+cameraLook = {centerI + 0.5, centerJ + 0.5, baseH + 1.5};
+
+rayResult = ddaRay[cameraPos, cameraLook - cameraPos, 300];
+
+Print["Camera        : ", cameraPos];
+Print["Look-at       : ", cameraLook];
+Print["Steps taken   : ", Length[rayResult["Path"]]];
+Print["First solid   : ", rayResult["Hit"]];
+Print["Material hit  : ",
+      If[rayResult["Hit"] =!= None,
+         materials[getBlock[rayResult["Hit"]]]["Name"],
+         "no hit"]];
+
+(* Visualize ray path *)
+rayGraphics = Graphics3D[{
+   {Red, Thick, Arrow[{cameraPos, cameraLook}]},
+   {Yellow, PointSize[0.015],
+    Point[# + 0.5 & /@ rayResult["Path"]]},
+   If[rayResult["Hit"] =!= None,
+      {Green, PointSize[0.05], Point[rayResult["Hit"] + 0.5]},
+      Nothing],
+   Text[Style["camera", Black, 11, Background -> White],
+        cameraPos + {0, 0, 0.8}]
+   }];
+
+Print["Ray path (yellow = visited voxels, green = first solid hit):"];
+Print[Show[scene, rayGraphics, ImageSize -> 750]];
+
+
+(* STAGE 6 — EXPORT                                             *)
+
+
+Print[""];
+Print["============================================================"];
+Print["  STAGE 6 — EXPORT"];
+Print["============================================================"];
+
+objFile = FileNameJoin[{Directory[], "collider.obj"}];
+Export[objFile,
+   Graphics3D[{
+      GraphicsComplex[objectWorldVerts,
+         Polygon /@ PolyhedronData["Icosahedron", "FaceIndices"]]}],
+   "OBJ"];
+Print["Wrote ", objFile];
+
+(* Voxel map: "i,j,k,matId" per line — trivially parsed by C++. *)
+voxFile = FileNameJoin[{Directory[], "voxels.txt"}];
+Export[voxFile,
+   StringRiffle[
+      (StringRiffle[ToString /@ #[[1]], ","] <> "," <> ToString[#[[2]]]) & /@
+        solidBlocks,
+      "\n"],
+   "Text"];
+Print["Wrote ", voxFile, "  (", Length[solidBlocks], " blocks)"];
+
+Print[""];
+Print["============================================================"];
+Print["  DONE"];
+Print["============================================================"];
+Print["  Local -> world chain, collider primitives, voxel grid,"];
+Print["  and DDA ray traversal all verified in one script."];
