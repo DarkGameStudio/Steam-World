@@ -157,9 +157,9 @@ inline bool NearlyEqual(f32 a, f32 b, f32 eps = EPSILON) {
 // 4. Vectors
 // ============================================================
 struct Vec2 {
-    f32 x = 0, y = 0;
+    u8 x = 0, y = 0;
     constexpr Vec2() = default;
-    constexpr Vec2(f32 X, f32 Y) : x(X), y(Y) {}
+    constexpr Vec2(u8 X, u8 Y) : x(X), y(Y) {}
 
     Vec2  operator+(Vec2 o)  const { return {x + o.x, y + o.y}; }
     Vec2  operator-(Vec2 o)  const { return {x - o.x, y - o.y}; }
@@ -184,14 +184,14 @@ inline Vec2 Normalize(Vec2 v) {
 inline Vec2 Lerp(Vec2 a, Vec2 b, f32 t) { return a + (b - a) * t; }
 
 struct Vec3 {
-    f32 x = 0, y = 0, z = 0;
+    u8 x = 0, y = 0, z = 0;
     constexpr Vec3() = default;
-    constexpr Vec3(f32 X, f32 Y, f32 Z) : x(X), y(Y), z(Z) {}
+    constexpr Vec3(u8 X, u8 Y, u8 Z) : x(X), y(Y), z(Z) {}
 
     Vec3  operator+(Vec3 o)  const { return {x + o.x, y + o.y, z + o.z}; }
     Vec3  operator-(Vec3 o)  const { return {x - o.x, y - o.y, z - o.z}; }
-    Vec3  operator*(f32 s)   const { return {x * s,   y * s,   z * s};   }
-    Vec3  operator/(f32 s)   const { return {x / s,   y / s,   z / s};   }
+    Vec3  operator*(u16 s)   const { return {x * s,   y * s,   z * s};   }
+    Vec3  operator/(u32 s)   const { return {x / s,   y / s,   z / s};   }
     Vec3  operator-()        const { return {-x, -y, -z}; }
     Vec3& operator+=(Vec3 o) { x += o.x; y += o.y; z += o.z; return *this; }
     Vec3& operator-=(Vec3 o) { x -= o.x; y -= o.y; z -= o.z; return *this; }
